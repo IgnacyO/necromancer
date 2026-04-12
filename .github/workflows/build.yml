@@ -8,7 +8,6 @@ jobs:
 build:
 runs-on: ubuntu-latest
 
-```
 steps:
   - name: Checkout repository
     uses: actions/checkout@v4
@@ -18,4 +17,3 @@ steps:
     with:
       esp_idf_version: v5.1
       target: esp32
-```
