@@ -1,0 +1,70 @@
+# Build output
+
+/build/
+/build_*/
+/dist/
+
+# CMake
+
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# SDK config (generated, but keep default)
+
+sdkconfig
+sdkconfig.old
+
+# Keep default config template
+
+!sdkconfig.defaults
+
+# Managed components (auto-downloaded)
+
+managed_components/
+
+# IDF component manager lock file (optional)
+
+dependencies.lock
+
+# Python virtual env (if used)
+
+.venv/
+venv/
+env/
+
+# VS Code
+
+.vscode/
+
+# CLion / JetBrains
+
+.idea/
+
+# macOS
+
+.DS_Store
+
+# Windows
+
+Thumbs.db
+
+# Logs
+
+*.log
+
+# Temporary files
+
+*.tmp
+*.swp
+*~
+
+# Partition table binaries
+
+*.bin
+
+# Flash artifacts
+
+*.elf
+*.map
