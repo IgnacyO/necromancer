@@ -1,16 +1,13 @@
 /*
  * SPDX-FileCopyrightText: 2021-2022 Espressif Systems (Shanghai) CO LTD
- *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: Unlicense
  */
+#ifndef COMPONENTS_IR_NEC_INCLUDE_IR_NEC_ENCODER_H_
+#define COMPONENTS_IR_NEC_INCLUDE_IR_NEC_ENCODER_H_
 #pragma once
 
 #include <stdint.h>
 #include "driver/rmt_encoder.h"
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @brief IR NEC scan code representation
@@ -39,6 +36,4 @@ typedef struct {
  */
 esp_err_t rmt_new_ir_nec_encoder(const ir_nec_encoder_config_t *config, rmt_encoder_handle_t *ret_encoder);
 
-#ifdef __cplusplus
-}
-#endif
+#endif /* COMPONENTS_IR_NEC_INCLUDE_IR_NEC_ENCODER_H_ */
