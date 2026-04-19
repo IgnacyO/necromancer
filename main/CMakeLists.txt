@@ -6,5 +6,5 @@ idf_component_register(
     INCLUDE_DIRS        # optional, add here public include directories
     PRIV_INCLUDE_DIRS   # optional, add here private include directories
     REQUIRES            ir_nec# optional, list the public requirements (component names)
-    PRIV_REQUIRES       esp_driver_rmt# optional, list the private requirements
+    PRIV_REQUIRES       driver# optional, list the private requirements
 )
