@@ -5,6 +5,6 @@ idf_component_register(
     SRCS main.c         # list the source files of this component
     INCLUDE_DIRS        # optional, add here public include directories
     PRIV_INCLUDE_DIRS   # optional, add here private include directories
-    REQUIRES            ir_nec# optional, list the public requirements (component names)
+    REQUIRES            ir_nec uart# optional, list the public requirements (component names)
     PRIV_REQUIRES       driver# optional, list the private requirements
 )

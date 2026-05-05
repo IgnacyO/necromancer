@@ -15,9 +15,11 @@
 #include "freertos/projdefs.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "hal/uart_types.h"
 #include "ir_nec_encoder.h"
 #include "ir_nec_parser.h"
 #include "driver/gpio.h"
+#include "uart.h"
 
 #define IR_RX_GPIO GPIO_NUM_27
 #define IR_TX_GPIO GPIO_NUM_26
@@ -118,14 +120,29 @@ void app_main(void)
     ESP_ERROR_CHECK(rmt_new_ir_nec_encoder(&nec_encoder_cfg, &nec_encoder));
 
     ESP_LOGI(TAG, "enable RMT TX and RX channels");
-    ESP_ERROR_CHECK(rmt_enable(tx_channel));
-    ESP_ERROR_CHECK(rmt_enable(rx_channel));
+    //ESP_ERROR_CHECK(rmt_enable(tx_channel));
+    //ESP_ERROR_CHECK(rmt_enable(rx_channel));
 	
-	ESP_ERROR_CHECK(rmt_receive(rx_channel, raw_symbols, sizeof(raw_symbols), &receive_config));
+	//ESP_ERROR_CHECK(rmt_receive(rx_channel, raw_symbols, sizeof(raw_symbols), &receive_config));
 	
+	uart_m_config_t uart_m_config = {
+		.uart_event_queue_size = 20,
+		.event_addr = 16,
+		.rx_buffer_size = 1024,
+		.tx_buffer_size = 1024,
+		.baud_rate = 115200,
+		.uart_port = UART_NUM_0
+	};
+	vTaskDelay(pdMS_TO_TICKS(1000*5));
+
+	QueueHandle_t uart_q_in = xQueueCreate(128, 1);
+	uart_m_t uart_m;
+	ESP_ERROR_CHECK(uart_init(&uart_m, &uart_m_config, uart_q_in, NULL, NULL));
+	ESP_ERROR_CHECK(uart_run_rx(&uart_m));
 	
     while (true) {
-        if (xQueueReceive(receive_queue, &rx_data, pdMS_TO_TICKS(1000)) == pdPASS) {
+		vTaskDelay(pdMS_TO_TICKS(100));
+        /*if (xQueueReceive(receive_queue, &rx_data, pdMS_TO_TICKS(1000)) == pdPASS) {
             // parse the receive symbols and print the result
         	parse_received_symbols_to_nec(rx_data.received_symbols, rx_data.num_symbols);
             // start receive again
@@ -136,6 +153,6 @@ void app_main(void)
 				.command = 0x3003
 			};
 			ESP_ERROR_CHECK(rmt_transmit(tx_channel, nec_encoder, &scan_code, sizeof(scan_code), &transmit_config));
-		}
+		}*/
     }
 }
