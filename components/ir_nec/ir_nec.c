@@ -1,4 +1,6 @@
 #include "ir_nec.h"
+#include "driver/rmt_common.h"
+#include "driver/rmt_encoder.h"
 #include "driver/rmt_types.h"
 #include "esp_log.h"
 #include "freertos/ringbuf.h"
@@ -29,7 +31,7 @@ void reset_ring_buffer(RingbufHandle_t buf_handle) {
 static bool rmt_rx_done_callback(rmt_channel_handle_t channel, const rmt_rx_done_event_data_t *event_data, void *user_data) {
 	// BaseType_t is the most efficient data type for the architecture
 	BaseType_t high_task_wakeup = pdFALSE;
-	RingbufHandle_t rx_buf = (RingbufHandle_t)user_data;
+	RingbufHandle_t rx_buf = *(RingbufHandle_t*)user_data;
 	xRingbufferSendFromISR(rx_buf, event_data, sizeof(rmt_rx_done_event_data_t), &high_task_wakeup);
 	return high_task_wakeup == pdTRUE;
 }
@@ -43,11 +45,10 @@ esp_err_t ir_nec_init(ir_nec_m_t *ir_nec_m, const ir_nec_m_config_t *config) {
 		.flags.invert_in = 1
 	};
 	ESP_ERROR_CHECK(rmt_new_rx_channel(&rmt_rx_chan_config, &ir_nec_m->rmt_rx_chan));
-	QueueHandle_t receive_queue = xQueueCreate(config->rmt_rx_queue_size, sizeof(rmt_rx_done_event_data_t));
     rmt_rx_event_callbacks_t cbs = {
         .on_recv_done = rmt_rx_done_callback,
     };
-    ESP_ERROR_CHECK(rmt_rx_register_event_callbacks(ir_nec_m->rmt_rx_chan, &cbs, receive_queue));
+    ESP_ERROR_CHECK(rmt_rx_register_event_callbacks(ir_nec_m->rmt_rx_chan, &cbs, &ir_nec_m->rx_interm_buf));
 	
 	 rmt_tx_channel_config_t tx_channel_cfg = {
         .clk_src = RMT_CLK_SRC_DEFAULT,
@@ -86,6 +87,13 @@ esp_err_t ir_nec_deinit(ir_nec_m_t *ir_nec_m) {
 	reset_ring_buffer(ir_nec_m->tx_interm_buf);*/
 	vRingbufferDelete(ir_nec_m->rx_interm_buf);
 	vRingbufferDelete(ir_nec_m->tx_interm_buf);
+	ESP_ERROR_CHECK(rmt_disable(ir_nec_m->rmt_rx_chan));
+    ESP_ERROR_CHECK(rmt_disable(ir_nec_m->rmt_tx_chan));
+    rmt_del_channel(ir_nec_m->rmt_rx_chan);
+    rmt_del_channel(ir_nec_m->rmt_tx_chan);
+    rmt_del_encoder(ir_nec_m->nec_encoder);
+	ir_nec_m->rx_running = false;
+	ir_nec_m->tx_running = false;
 	ir_nec_m->initialized = false;
 	return ESP_OK;
 }
