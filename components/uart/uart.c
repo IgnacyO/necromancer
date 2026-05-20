@@ -3,36 +3,54 @@
 #include "esp_check.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "events.h"
+#include "freertos/projdefs.h"
+#include "freertos/ringbuf.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/FreeRTOS.h"
+#include "portmacro.h"
 #include <stdint.h>
+#include <string.h>
+
+static const char *UART_TAG = "uart_module";
+
+void reset_ring_buffer(RingbufHandle_t buf_handle) {
+    if (buf_handle == NULL) {
+        return;
+    }
+
+    size_t item_size;
+    void *item;
+
+    while ((item = xRingbufferReceive(buf_handle, &item_size, 0)) != NULL) {
+    	vRingbufferReturnItem(buf_handle, item);
+    }
+}
 
 static void uart_rx_task(void *pvParameters) {
-	uart_m_t *uart_m_ptr = pvParameters;
+	uart_m_rx_task_arg_t *arg = pvParameters;
+	uart_m_t *uart_m_ptr = arg->uart;
+	QueueHandle_t event_queue = arg->event_queue;
+	
     uart_event_t uart_event;
     event_t event;
     
     char buffer[sizeof(uart_frame_t)];
 
     for (;;) {
-		/*if (uart_m_ptr->event_queue_out_impl == NULL) {
-			vTaskDelay(pdMS_TO_TICKS(10));
-			continue;
-		}*/
-        if (xQueueReceive(uart_m_ptr->uart_event_queue, (void *)&uart_event, (TickType_t)portMAX_DELAY)) {
+        if (xQueueReceive(uart_m_ptr->uart_internal_queue, (void *)&uart_event, 10)) {
             switch (uart_event.type) {
             case UART_DATA:
-                uart_read_bytes(uart_m_ptr->uart_port,buffer, sizeof(uart_frame_t), portMAX_DELAY);
-                ESP_LOGI(UART_TAG, "UART: %c %c %c\n", buffer[0], buffer[1], buffer[2]);
-                event.event_type = EVENT_UART;
+                uart_read_bytes(uart_m_ptr->uart_port,buffer, sizeof(uart_frame_t), 10);
+                event.event_type = EVENT_UART_DATA;
                 event.payload_len = sizeof(uart_frame_t);
-                //UBaseType_t res =  xRingbufferSend(uart_m_ptr->event_ring_buffer, &event, sizeof(event_t),(TickType_t)portMAX_DELAY);
-			    //if (res != pdTRUE) {
-			    //    ESP_LOGE(UART_TAG, "could not send event to dispatcher's ring buffer");
-			    //}
-			    if (uart_m_ptr->event_send_impl != NULL) {
-					ESP_LOGI(UART_TAG, "SEND IMPL IS NOT NULL");
-					uart_m_ptr->event_send_impl(uart_m_ptr->event_queue_out_impl, event);
+                if (xQueueSend(event_queue, (void *)&event, 10) == pdFAIL) {
+					ESP_LOGE(UART_TAG, "Rx: Failed to send an event to the dispatcher queue.");
+					continue;
+				}
+                if (xRingbufferSend(uart_m_ptr->rx_interm_buf, buffer, sizeof(uart_frame_t), 10) == pdFAIL) {
+					ESP_LOGE(UART_TAG, "Rx: Failed to save uart frame in the interm buffer.");
 				}
                 break;
             //Event of HW FIFO overflow detected
@@ -42,7 +60,7 @@ static void uart_rx_task(void *pvParameters) {
                 // The ISR has already reset the rx FIFO,
                 // As an example, we directly flush the rx buffer here in order to read more data.
                 uart_flush_input(uart_m_ptr->uart_port);
-                xQueueReset(uart_m_ptr->uart_event_queue);
+                xQueueReset(uart_m_ptr->uart_internal_queue);
                 break;
             //Event of UART ring buffer full
             case UART_BUFFER_FULL:
@@ -50,7 +68,7 @@ static void uart_rx_task(void *pvParameters) {
                 // If buffer full happened, you should consider increasing your buffer size
                 // As an example, we directly flush the rx buffer here in order to read more data.
                 uart_flush_input(uart_m_ptr->uart_port);
-                xQueueReset(uart_m_ptr->uart_event_queue);
+                xQueueReset(uart_m_ptr->uart_internal_queue);
                 break;
             //Event of UART RX break detected
             case UART_BREAK:
@@ -69,18 +87,34 @@ static void uart_rx_task(void *pvParameters) {
                 break;
             }
         }
+
     }
     vTaskDelete(NULL);
 }
 
-esp_err_t uart_init(uart_m_t *uart_m, uart_m_config_t *uart_m_config, QueueHandle_t event_queue_in, void *event_queue_out_impl, esp_err_t (*event_send_impl)(void *, event_t)) {
+static void uart_tx_task(void *pvParamters) {
+	uart_m_t *uart_m_ptr = pvParamters;
+	size_t received_frame_len;
+	uart_frame_t *frame_to_be_sent;
+	for (;;) {
+		if ((frame_to_be_sent = (uart_frame_t*)xRingbufferReceive(uart_m_ptr->tx_interm_buf, &received_frame_len, 10)) != NULL) {
+			ESP_LOGI(UART_TAG, "GOT SOMETHING TX");
+			uart_write_bytes(uart_m_ptr->uart_port, frame_to_be_sent, received_frame_len);
+			vRingbufferReturnItem(uart_m_ptr->tx_interm_buf, frame_to_be_sent);
+		}
+	}
+	vTaskDelete(NULL);
+}
+
+esp_err_t uart_init(uart_m_t *uart_m, uart_m_config_t *uart_m_config) {
+	ESP_LOGI(UART_TAG, "uart module init...");
 	esp_err_t ret;
 	
 	assert(uart_m != NULL && uart_m_config);
 	
 	// Install driver if not already
 	if (!uart_is_driver_installed(uart_m_config->uart_port)) {
-		ESP_GOTO_ON_ERROR(uart_driver_install(uart_m_config->uart_port, uart_m_config->rx_buffer_size, uart_m_config->tx_buffer_size, uart_m_config->uart_event_queue_size, &uart_m->uart_event_queue, 0), err, UART_TAG, "installing uart driver failed.");
+		ESP_GOTO_ON_ERROR(uart_driver_install(uart_m_config->uart_port, uart_m_config->rx_buffer_size, uart_m_config->tx_buffer_size, uart_m_config->uart_event_queue_size, &uart_m->uart_internal_queue, 0), err, UART_TAG, "installing uart driver failed.");
 	}
 	
 	uart_config_t uart_config = {
@@ -92,14 +126,14 @@ esp_err_t uart_init(uart_m_t *uart_m, uart_m_config_t *uart_m_config, QueueHandl
 	};
 	
 	ESP_GOTO_ON_ERROR(uart_param_config(uart_m_config->uart_port, &uart_config), err, UART_TAG, "configuring uart failed.");
-	uart_m->event_queue_in = event_queue_in;
 	uart_m->event_addr = uart_m_config->event_addr;
 	uart_m->initialized = true;
 	uart_m->tx_running = false;
 	uart_m->rx_running = false;
 	uart_m->uart_port = uart_m_config->uart_port;
-	uart_m->event_send_impl = event_send_impl;
-	uart_m->event_queue_out_impl = event_queue_out_impl;
+	uart_m->tx_event_queue = xQueueCreate(uart_m_config->tx_event_queue_size, sizeof(event_t));
+	uart_m->rx_interm_buf = xRingbufferCreate(uart_m_config->rx_interm_buffer_size, RINGBUF_TYPE_NOSPLIT);
+	uart_m->tx_interm_buf = xRingbufferCreate(uart_m_config->tx_interm_buffer_size, RINGBUF_TYPE_NOSPLIT);
 	
 	
 	switch(uart_m->uart_port) {
@@ -117,45 +151,71 @@ esp_err_t uart_init(uart_m_t *uart_m, uart_m_config_t *uart_m_config, QueueHandl
 			return ESP_ERR_INVALID_ARG;
 	}
 	
+	ESP_LOGI(UART_TAG, "done.");
+
+	
 	return ESP_OK;
 
 	err:
 		return ESP_FAIL;
 }
 
-esp_err_t uart_run_tx(uart_m_t *uart_m) {
+esp_err_t uart_tx_run(uart_m_t *uart_m) {
 	if (uart_m->tx_running || !uart_m->initialized) return ESP_ERR_INVALID_STATE;
-	// run tx task
+	xTaskCreate(uart_tx_task, "uart_tx_task", 3072, uart_m, 12, &uart_m->tx_task_handle);
+	uart_m->tx_running = true;
 	return ESP_OK;
 }
 
-esp_err_t uart_run_rx(uart_m_t *uart_m) {
-	if (uart_m->tx_running || !uart_m->initialized) return ESP_ERR_INVALID_STATE;
-	xTaskCreate(uart_rx_task, "uart_rx_task", 3072, uart_m, 12, &uart_m->rx_task_handle);
+esp_err_t uart_rx_run(uart_m_t *uart_m, QueueHandle_t event_queue) {
+	if (uart_m->rx_running || !uart_m->initialized) return ESP_ERR_INVALID_STATE;
+	uart_m_rx_task_arg_t task_arg = {
+		.uart = uart_m,
+		.event_queue = event_queue
+	};
+	xTaskCreate(uart_rx_task, "uart_rx_task", 3072, &task_arg, 12, &uart_m->rx_task_handle);
 	uart_m->rx_running = true;
 	return ESP_OK;
 }
 
 esp_err_t uart_stop_tx(uart_m_t *uart_m) {
-	if (uart_m->tx_running && uart_m->initialized); // suspend tx
+	if (uart_m->tx_running && uart_m->initialized) {
+		vTaskSuspend(uart_m->tx_task_handle);
+		uart_m->tx_running = false;
+		reset_ring_buffer(uart_m->tx_interm_buf);
+		return ESP_OK;		
+	}
 	return ESP_ERR_INVALID_STATE;
 }
 
 esp_err_t uart_stop_rx(uart_m_t *uart_m) {
-	if (uart_m->tx_running && uart_m->initialized) {
+	if (uart_m->rx_running && uart_m->initialized) {
 		vTaskSuspend(uart_m->rx_task_handle);
 		uart_m->rx_running = false;
+		reset_ring_buffer(uart_m->rx_interm_buf);
 		return ESP_OK;
 	}
 	return ESP_ERR_INVALID_STATE;
 }
 
-esp_err_t uart_read(uart_m_t *uart_m, char *buffer, size_t size, size_t *len) {
-	return ESP_OK;
+size_t uart_read(uart_m_t *uart_m, uart_frame_t *buffer) {
+	size_t res_size;
+	void *res = xRingbufferReceive(uart_m->rx_interm_buf, &res_size, 10);
+	if (res == NULL) {
+		ESP_LOGE(UART_TAG, "RX: Failed to receiving data from intermediate buffer");
+		return 0;
+	}
+	memcpy(buffer, res, res_size);
+	vRingbufferReturnItem(uart_m->rx_interm_buf, res);
+	return res_size;
 }
 
-esp_err_t uart_write(uart_m_t *uart_m, char *buffer, size_t size, size_t *len){
-	return ESP_OK;
+size_t uart_write(uart_m_t *uart_m, uart_frame_t *buffer){
+	if (xRingbufferSend(uart_m->tx_interm_buf, buffer, sizeof(uart_frame_t), 10) == pdFALSE) {
+		ESP_LOGE(UART_TAG, "TX: Failed to send data to intermediate buffer");
+		return 0;
+	}
+	return sizeof(uart_frame_t);
 }
 
 esp_err_t uart_deinit(uart_m_t *uart) {
@@ -165,7 +225,9 @@ esp_err_t uart_deinit(uart_m_t *uart) {
 	esp_err_t ret;
 	ESP_ERROR_CHECK(uart_driver_delete(uart->uart_port));
 	uart->initialized = false;
-	xQueueReset(uart->event_queue_in);
-	xQueueReset(uart->uart_event_queue);
+	vRingbufferDelete(uart->rx_interm_buf);
+	vRingbufferDelete(uart->tx_interm_buf);
+	xQueueReset(uart->tx_event_queue);
+	xQueueReset(uart->uart_internal_queue);
 	return ESP_OK;
 }
