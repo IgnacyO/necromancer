@@ -11,6 +11,7 @@
 #include "freertos/queue.h"
 #include "driver/rmt_tx.h"
 #include "driver/rmt_rx.h"
+#include <stdint.h>
 
 #define EXAMPLE_IR_NEC_DECODE_MARGIN 400     // Tolerance for parsing RMT symbols into bit stream
 
@@ -25,7 +26,6 @@
 #define NEC_PAYLOAD_ONE_DURATION_1   1690
 #define NEC_REPEAT_CODE_DURATION_0   9000
 #define NEC_REPEAT_CODE_DURATION_1   2250
-
 
 /**
  * @brief Check whether a RMT symbol represents NEC logic zero

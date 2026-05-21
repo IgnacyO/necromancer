@@ -4,8 +4,11 @@
 #include "driver/rmt_types.h"
 #include "esp_log.h"
 #include "freertos/ringbuf.h"
+#include "ir_nec_encoder.h"
+#include <string.h>
+#define MIN(a, b) ((a) <= (b) ? (a) : (b))
 
-/*static const char* IR_NEC_TAG = "ir_nec";
+static const char* IR_NEC_TAG = "ir_nec"; /*
 static const rmt_receive_config_t receive_config = {
     .signal_range_min_ns = IR_NEC_SIG_RANGE_MIN_NS,     
     .signal_range_max_ns = IR_NEC_SIG_RANGE_MAX_NS,
@@ -80,6 +83,25 @@ esp_err_t ir_nec_init(ir_nec_m_t *ir_nec_m, const ir_nec_m_config_t *config) {
     ir_nec_m->tx_interm_buf = xRingbufferCreate(config->tx_interm_buf_sz, RINGBUF_TYPE_NOSPLIT);
     
 	return ESP_OK;
+}
+
+size_t ir_nec_read(ir_nec_m_t *ir_nec_m, ir_nec_scan_code_t* buf) {
+	size_t res_size;
+	void *res = xRingbufferReceive(ir_nec_m->rx_interm_buf, &res_size, 10);
+	if (res == NULL) {
+		ESP_LOGE(IR_NEC_TAG, "RX: Failed to receive data from intermediate buffer");
+		return 0;
+	}
+	memcpy(buf, res, res_size);
+	vRingbufferReturnItem(ir_nec_m->rx_interm_buf, res);
+	return res_size;
+}
+
+void ir_nec_write(ir_nec_m_t *ir_nec_m, ir_nec_scan_code_t* buf) {
+	if (xRingbufferSend(ir_nec_m->tx_interm_buf, buf, sizeof(ir_nec_scan_code_t), 10) == pdFALSE) {
+		ESP_LOGE(IR_NEC_TAG, "TX: Failed to send data to intermediate buffer");
+		return;
+	}
 }
 
 esp_err_t ir_nec_deinit(ir_nec_m_t *ir_nec_m) {
