@@ -13,7 +13,7 @@
 // the shortest duration for NEC signal is 560us, 1250ns < 560us, valid signal won't be treated as noise
 #define IR_NEC_SIG_RANGE_MIN_NS 1250 
 // the longest duration for NEC signal is 9000us, 12000000ns > 9000us, the receive won't stop early
-#define IR_NEC_SIG_RANGE_MAX_NS 1200000 
+#define IR_NEC_SIG_RANGE_MAX_NS 1200000
 
 typedef struct {
 	size_t rmt_rx_queue_size;
@@ -36,6 +36,7 @@ typedef struct {
 	TaskHandle_t tx_task_handle;
 	RingbufHandle_t rx_interm_buf;
 	RingbufHandle_t tx_interm_buf;
+	QueueHandle_t rmt_rx_queue;
 } ir_nec_m_t;
 
 esp_err_t ir_nec_init(ir_nec_m_t *ir_nec_m, const ir_nec_m_config_t *config);

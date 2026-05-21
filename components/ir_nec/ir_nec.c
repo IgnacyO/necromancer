@@ -4,16 +4,20 @@
 #include "driver/rmt_types.h"
 #include "esp_log.h"
 #include "freertos/ringbuf.h"
+#include "freertos/queue.h"
 #include "ir_nec_encoder.h"
+#include "ir_nec_parser.h"
 #include <string.h>
-#define MIN(a, b) ((a) <= (b) ? (a) : (b))
 
-static const char* IR_NEC_TAG = "ir_nec"; /*
+#define MIN(a, b) ((a) <= (b) ? (a) : (b))
+#define RX_SYMBOL_NUM 64
+
+static const char* IR_NEC_TAG = "ir_nec";
 static const rmt_receive_config_t receive_config = {
     .signal_range_min_ns = IR_NEC_SIG_RANGE_MIN_NS,     
     .signal_range_max_ns = IR_NEC_SIG_RANGE_MAX_NS,
-};*/
-// Dont send NEC frames in a loop
+};
+
 static const rmt_transmit_config_t transmit_config = {
     .loop_count = 0,
 };
@@ -22,10 +26,8 @@ void reset_ring_buffer(RingbufHandle_t buf_handle) {
     if (buf_handle == NULL) {
         return;
     }
-
     size_t item_size;
     void *item;
-
     while ((item = xRingbufferReceive(buf_handle, &item_size, 0)) != NULL) {
     	vRingbufferReturnItem(buf_handle, item);
     }
@@ -38,22 +40,47 @@ static void ir_nec_tx_task(void *pvParamters) {
 	for (;;) {
 		if ((frame_to_be_sent = (ir_nec_scan_code_t*)xRingbufferReceive(ir_nec_m->tx_interm_buf, &received_frame_len, 10)) != NULL) {
 			ESP_LOGI(IR_NEC_TAG, "GOT SOMETHING TX");
-			rmt_transmit(ir_nec_m->rmt_rx_chan, ir_nec_m->nec_encoder, frame_to_be_sent, sizeof(ir_nec_scan_code_t), &transmit_config);
+			rmt_transmit(ir_nec_m->rmt_tx_chan, ir_nec_m->nec_encoder, frame_to_be_sent, sizeof(ir_nec_scan_code_t), &transmit_config);
 			vRingbufferReturnItem(ir_nec_m->tx_interm_buf, frame_to_be_sent);
 		}
 	}
 	vTaskDelete(NULL);
 }
 
+static void ir_nec_rx_task(void *pvParameters) {
+    ir_nec_m_t *ir_nec_m = (ir_nec_m_t *)pvParameters;
+    rmt_rx_done_event_data_t evt_data;
+    rmt_symbol_word_t rx_symbols[RX_SYMBOL_NUM];
+
+    for (;;) {
+        rmt_receive(ir_nec_m->rmt_rx_chan, rx_symbols, sizeof(rx_symbols), &receive_config);
+
+        if (xQueueReceive(ir_nec_m->rmt_rx_queue, &evt_data, pdMS_TO_TICKS(10)) == pdTRUE) {
+            ir_nec_scan_code_t scan_code;
+            
+             if (nec_parse_frame(&evt_data, &scan_code) == ESP_OK) { 
+                 xRingbufferSend(ir_nec_m->rx_interm_buf, &scan_code, sizeof(ir_nec_scan_code_t), pdMS_TO_TICKS(10));
+            }           
+        }
+    }
+    vTaskDelete(NULL);
+}
+
 static bool rmt_rx_done_callback(rmt_channel_handle_t channel, const rmt_rx_done_event_data_t *event_data, void *user_data) {
-	// BaseType_t is the most efficient data type for the architecture
 	BaseType_t high_task_wakeup = pdFALSE;
-	RingbufHandle_t rx_buf = *(RingbufHandle_t*)user_data;
-	xRingbufferSendFromISR(rx_buf, event_data, sizeof(rmt_rx_done_event_data_t), &high_task_wakeup);
+	QueueHandle_t rx_queue = *(QueueHandle_t*)user_data;
+	xQueueSendFromISR(rx_queue, event_data, &high_task_wakeup);
 	return high_task_wakeup == pdTRUE;
 }
 
 esp_err_t ir_nec_init(ir_nec_m_t *ir_nec_m, const ir_nec_m_config_t *config) {
+    ir_nec_m->initialized = true;
+    ir_nec_m->rx_running = false;
+    ir_nec_m->tx_running = false;
+    ir_nec_m->rx_interm_buf = xRingbufferCreate(config->rx_interm_buf_sz, RINGBUF_TYPE_NOSPLIT);
+    ir_nec_m->tx_interm_buf = xRingbufferCreate(config->tx_interm_buf_sz, RINGBUF_TYPE_NOSPLIT);
+    ir_nec_m->rmt_rx_queue = xQueueCreate(config->rmt_rx_queue_size, sizeof(rmt_rx_done_event_data_t));
+
 	rmt_rx_channel_config_t rmt_rx_chan_config = {
 		.clk_src = RMT_CLK_SRC_DEFAULT,
 		.gpio_num = config->rx_gpio,
@@ -62,26 +89,21 @@ esp_err_t ir_nec_init(ir_nec_m_t *ir_nec_m, const ir_nec_m_config_t *config) {
 		.flags.invert_in = 1
 	};
 	ESP_ERROR_CHECK(rmt_new_rx_channel(&rmt_rx_chan_config, &ir_nec_m->rmt_rx_chan));
+    
     rmt_rx_event_callbacks_t cbs = {
         .on_recv_done = rmt_rx_done_callback,
     };
-    ESP_ERROR_CHECK(rmt_rx_register_event_callbacks(ir_nec_m->rmt_rx_chan, &cbs, &ir_nec_m->rx_interm_buf));
+    ESP_ERROR_CHECK(rmt_rx_register_event_callbacks(ir_nec_m->rmt_rx_chan, &cbs, &ir_nec_m->rmt_rx_queue));
 	
-	 rmt_tx_channel_config_t tx_channel_cfg = {
+	rmt_tx_channel_config_t tx_channel_cfg = {
         .clk_src = RMT_CLK_SRC_DEFAULT,
         .resolution_hz = config->resolution_hz,
         .mem_block_symbols = 64,
-        .trans_queue_depth = 4,  // number of transactions that allowed to pending in the background, this example won't queue multiple transactions, so queue depth > 1 is sufficient
+        .trans_queue_depth = 4,
         .gpio_num = config->tx_gpio,
     };
     ESP_ERROR_CHECK(rmt_new_tx_channel(&tx_channel_cfg, &ir_nec_m->rmt_tx_chan));
-
-    /*rmt_carrier_config_t carrier_cfg = {
-        .duty_cycle = 0.33,
-        .frequency_hz = 38000, // 38KHz
-    };*/
     ESP_ERROR_CHECK(rmt_apply_carrier(ir_nec_m->rmt_tx_chan, &config->tx_carrier_config));
-
 
     ir_nec_encoder_config_t nec_encoder_cfg = {
         .resolution = config->resolution_hz,
@@ -90,29 +112,19 @@ esp_err_t ir_nec_init(ir_nec_m_t *ir_nec_m, const ir_nec_m_config_t *config) {
     ESP_ERROR_CHECK(rmt_enable(ir_nec_m->rmt_rx_chan));
     ESP_ERROR_CHECK(rmt_enable(ir_nec_m->rmt_tx_chan));
     
-    ir_nec_m->initialized = true;
-    ir_nec_m->rx_running = false;
-    ir_nec_m->tx_running = false;
-    ir_nec_m->rx_interm_buf = xRingbufferCreate(config->rx_interm_buf_sz, RINGBUF_TYPE_NOSPLIT);
-    ir_nec_m->tx_interm_buf = xRingbufferCreate(config->tx_interm_buf_sz, RINGBUF_TYPE_NOSPLIT);
-    
 	return ESP_OK;
 }
 
 esp_err_t ir_nec_tx_run(ir_nec_m_t *ir_nec_m) {
 	if (ir_nec_m->tx_running || !ir_nec_m->initialized) return ESP_ERR_INVALID_STATE;
-	xTaskCreate(ir_nec_tx_task, "uart_tx_task", 3072, ir_nec_m, 12, &ir_nec_m->tx_task_handle);
+	xTaskCreate(ir_nec_tx_task, "ir_nec_tx_task", 3072, ir_nec_m, 12, &ir_nec_m->tx_task_handle);
 	ir_nec_m->tx_running = true;
 	return ESP_OK;
 }
 
-esp_err_t ir_nec_rx_run(ir_nec_m_t *ir_nec_m, QueueHandle_t event_queue) {
+esp_err_t ir_nec_rx_run(ir_nec_m_t *ir_nec_m) {
 	if (ir_nec_m->rx_running || !ir_nec_m->initialized) return ESP_ERR_INVALID_STATE;
-	uart_m_rx_task_arg_t task_arg = {
-		.uart = uart_m,
-		.event_queue = event_queue
-	};
-	xTaskCreate(uart_rx_task, "uart_rx_task", 3072, &task_arg, 12, &ir_nec_m->rx_task_handle);
+	xTaskCreate(ir_nec_rx_task, "ir_nec_rx_task", 3072, ir_nec_m, 12, &ir_nec_m->rx_task_handle);
 	ir_nec_m->rx_running = true;
 	return ESP_OK;
 }
@@ -132,6 +144,7 @@ esp_err_t ir_nec_stop_rx(ir_nec_m_t *ir_nec_m) {
 		vTaskSuspend(ir_nec_m->rx_task_handle);
 		ir_nec_m->rx_running = false;
 		reset_ring_buffer(ir_nec_m->rx_interm_buf);
+        xQueueReset(ir_nec_m->rmt_rx_queue);
 		return ESP_OK;
 	}
 	return ESP_ERR_INVALID_STATE;
@@ -157,10 +170,9 @@ void ir_nec_write(ir_nec_m_t *ir_nec_m, ir_nec_scan_code_t* buf) {
 }
 
 esp_err_t ir_nec_deinit(ir_nec_m_t *ir_nec_m) {
-/*	reset_ring_buffer(ir_nec_m->rx_interm_buf);
-	reset_ring_buffer(ir_nec_m->tx_interm_buf);*/
 	vRingbufferDelete(ir_nec_m->rx_interm_buf);
 	vRingbufferDelete(ir_nec_m->tx_interm_buf);
+    vQueueDelete(ir_nec_m->rmt_rx_queue);
 	ESP_ERROR_CHECK(rmt_disable(ir_nec_m->rmt_rx_chan));
     ESP_ERROR_CHECK(rmt_disable(ir_nec_m->rmt_tx_chan));
     rmt_del_channel(ir_nec_m->rmt_rx_chan);
