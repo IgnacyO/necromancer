@@ -26,7 +26,7 @@ bool nec_parse_logic1(rmt_symbol_word_t *rmt_nec_symbols)
            nec_check_in_range(rmt_nec_symbols->duration1, NEC_PAYLOAD_ONE_DURATION_1);
 }
 
-bool nec_parse_frame(rmt_symbol_word_t *rmt_nec_symbols, uint16_t *out_address, uint16_t *out_command)
+bool nec_parse_frame(rmt_symbol_word_t *rmt_nec_symbols, ir_nec_scan_code_t *nec_frame)
 {
     rmt_symbol_word_t *cur = rmt_nec_symbols;
     uint16_t address = 0;
@@ -58,8 +58,8 @@ bool nec_parse_frame(rmt_symbol_word_t *rmt_nec_symbols, uint16_t *out_address, 
         cur++;
     }
     // save address and command
-    *out_address = address;
-    *out_command = command;
+    nec_frame->address = address;
+    nec_frame->command = command;
     return true;
 }
 
@@ -67,4 +67,30 @@ bool nec_parse_frame_repeat(rmt_symbol_word_t *rmt_nec_symbols)
 {
     return nec_check_in_range(rmt_nec_symbols->duration0, NEC_REPEAT_CODE_DURATION_0) &&
            nec_check_in_range(rmt_nec_symbols->duration1, NEC_REPEAT_CODE_DURATION_1);
+}
+
+bool parse_received_symbols_to_nec(rmt_symbol_word_t *rmt_symbols, size_t num_symbols, ir_nec_scan_code_t *res) {
+	 printf("NEC frame start---\r\n");
+    for (size_t i = 0; i < num_symbols; i++) {
+        printf("{%d:%d},{%d:%d}\r\n", rmt_symbols[i].level0, rmt_symbols[i].duration0,
+               rmt_symbols[i].level1, rmt_symbols[i].duration1);
+    }
+    printf("---NEC frame end: ");
+    // decode RMT symbols
+    switch (num_symbols) {
+    case 34: // NEC normal frame
+        if (nec_parse_frame(rmt_symbols, res)) {
+			return true;
+        }
+        break;
+    case 2: // NEC repeat frame
+        if (nec_parse_frame_repeat(rmt_symbols)) {
+            printf("Repeat\n");
+        }
+        break;
+    default:
+        printf("Unknown NEC frame\r\n\r\n");
+        break;
+    }
+    return false;
 }

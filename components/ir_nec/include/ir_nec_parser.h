@@ -11,6 +11,7 @@
 #include "freertos/queue.h"
 #include "driver/rmt_tx.h"
 #include "driver/rmt_rx.h"
+#include "ir_nec_encoder.h"
 #include <stdint.h>
 
 #define EXAMPLE_IR_NEC_DECODE_MARGIN 400     // Tolerance for parsing RMT symbols into bit stream
@@ -38,10 +39,12 @@ bool nec_parse_logic1(rmt_symbol_word_t *rmt_nec_symbols);
 /**S
  * @brief Decode RMT symbols into NEC address and command
  */
-bool nec_parse_frame(rmt_symbol_word_t *rmt_nec_symbols, uint16_t *out_address, uint16_t *out_command);
+bool nec_parse_frame(rmt_symbol_word_t *rmt_nec_symbols, ir_nec_scan_code_t *nec_frame);
 /**
  * @brief Check whether the RMT symbols represent NEC repeat code
  */
 bool nec_parse_frame_repeat(rmt_symbol_word_t *rmt_nec_symbols);
+
+bool parse_received_symbols_to_nec(rmt_symbol_word_t *rmt_symbols, size_t num_symbols, ir_nec_scan_code_t *res);
 
 #endif /* COMPONENTS_IR_NEC_INCLUDE_IR_NEC_PARSER_H_ */
