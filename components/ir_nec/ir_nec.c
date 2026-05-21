@@ -12,11 +12,11 @@ static const char* IR_NEC_TAG = "ir_nec"; /*
 static const rmt_receive_config_t receive_config = {
     .signal_range_min_ns = IR_NEC_SIG_RANGE_MIN_NS,     
     .signal_range_max_ns = IR_NEC_SIG_RANGE_MAX_NS,
-};
+};*/
 // Dont send NEC frames in a loop
 static const rmt_transmit_config_t transmit_config = {
     .loop_count = 0,
-};*/
+};
 
 void reset_ring_buffer(RingbufHandle_t buf_handle) {
     if (buf_handle == NULL) {
@@ -29,6 +29,20 @@ void reset_ring_buffer(RingbufHandle_t buf_handle) {
     while ((item = xRingbufferReceive(buf_handle, &item_size, 0)) != NULL) {
     	vRingbufferReturnItem(buf_handle, item);
     }
+}
+
+static void ir_nec_tx_task(void *pvParamters) {
+	ir_nec_m_t *ir_nec_m = pvParamters;
+	size_t received_frame_len;
+	ir_nec_scan_code_t *frame_to_be_sent;
+	for (;;) {
+		if ((frame_to_be_sent = (ir_nec_scan_code_t*)xRingbufferReceive(ir_nec_m->tx_interm_buf, &received_frame_len, 10)) != NULL) {
+			ESP_LOGI(IR_NEC_TAG, "GOT SOMETHING TX");
+			rmt_transmit(ir_nec_m->rmt_rx_chan, ir_nec_m->nec_encoder, frame_to_be_sent, sizeof(ir_nec_scan_code_t), &transmit_config);
+			vRingbufferReturnItem(ir_nec_m->tx_interm_buf, frame_to_be_sent);
+		}
+	}
+	vTaskDelete(NULL);
 }
 
 static bool rmt_rx_done_callback(rmt_channel_handle_t channel, const rmt_rx_done_event_data_t *event_data, void *user_data) {
@@ -83,6 +97,44 @@ esp_err_t ir_nec_init(ir_nec_m_t *ir_nec_m, const ir_nec_m_config_t *config) {
     ir_nec_m->tx_interm_buf = xRingbufferCreate(config->tx_interm_buf_sz, RINGBUF_TYPE_NOSPLIT);
     
 	return ESP_OK;
+}
+
+esp_err_t ir_nec_tx_run(ir_nec_m_t *ir_nec_m) {
+	if (ir_nec_m->tx_running || !ir_nec_m->initialized) return ESP_ERR_INVALID_STATE;
+	xTaskCreate(ir_nec_tx_task, "uart_tx_task", 3072, ir_nec_m, 12, &ir_nec_m->tx_task_handle);
+	ir_nec_m->tx_running = true;
+	return ESP_OK;
+}
+
+esp_err_t ir_nec_rx_run(ir_nec_m_t *ir_nec_m, QueueHandle_t event_queue) {
+	if (ir_nec_m->rx_running || !ir_nec_m->initialized) return ESP_ERR_INVALID_STATE;
+	uart_m_rx_task_arg_t task_arg = {
+		.uart = uart_m,
+		.event_queue = event_queue
+	};
+	xTaskCreate(uart_rx_task, "uart_rx_task", 3072, &task_arg, 12, &ir_nec_m->rx_task_handle);
+	ir_nec_m->rx_running = true;
+	return ESP_OK;
+}
+
+esp_err_t ir_nec_stop_tx(ir_nec_m_t *ir_nec_m) {
+	if (ir_nec_m->tx_running && ir_nec_m->initialized) {
+		vTaskSuspend(ir_nec_m->tx_task_handle);
+		ir_nec_m->tx_running = false;
+		reset_ring_buffer(ir_nec_m->tx_interm_buf);
+		return ESP_OK;		
+	}
+	return ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t ir_nec_stop_rx(ir_nec_m_t *ir_nec_m) {
+	if (ir_nec_m->rx_running && ir_nec_m->initialized) {
+		vTaskSuspend(ir_nec_m->rx_task_handle);
+		ir_nec_m->rx_running = false;
+		reset_ring_buffer(ir_nec_m->rx_interm_buf);
+		return ESP_OK;
+	}
+	return ESP_ERR_INVALID_STATE;
 }
 
 size_t ir_nec_read(ir_nec_m_t *ir_nec_m, ir_nec_scan_code_t* buf) {
