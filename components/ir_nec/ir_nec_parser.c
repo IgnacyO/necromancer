@@ -26,7 +26,7 @@ bool nec_parse_logic1(rmt_symbol_word_t *rmt_nec_symbols)
            nec_check_in_range(rmt_nec_symbols->duration1, NEC_PAYLOAD_ONE_DURATION_1);
 }
 
-bool nec_parse_frame(rmt_symbol_word_t *rmt_nec_symbols, ir_nec_scan_code_t *nec_frame)
+/*bool nec_parse_frame(rmt_symbol_word_t *rmt_nec_symbols, ir_nec_scan_code_t *nec_frame)
 {
     rmt_symbol_word_t *cur = rmt_nec_symbols;
     uint16_t address = 0;
@@ -60,6 +60,84 @@ bool nec_parse_frame(rmt_symbol_word_t *rmt_nec_symbols, ir_nec_scan_code_t *nec
     // save address and command
     nec_frame->address = address;
     nec_frame->command = command;
+    return true;
+}*/
+
+bool nec_parse_frame(rmt_symbol_word_t *s, ir_nec_scan_code_t *out)
+{
+    if (!s || !out) return false;
+
+    rmt_symbol_word_t *cur = s;
+
+    // Check leader
+    if (!nec_check_in_range(cur->duration0, NEC_LEADING_CODE_DURATION_0) ||
+        !nec_check_in_range(cur->duration1, NEC_LEADING_CODE_DURATION_1)) {
+        return false;
+    }
+
+    cur++;
+
+    uint8_t addr_l = 0;
+    uint8_t addr_h = 0;
+    uint8_t cmd_l  = 0;
+    uint8_t cmd_h  = 0;
+
+    // Decode 16-bit address (LSB-first per byte)
+    for (int bit = 0; bit < 8; bit++) {
+        if (nec_parse_logic1(cur)) {
+            addr_l |= (1 << bit);
+        } else if (!nec_parse_logic0(cur)) {
+            return false;
+        }
+        cur++;
+    }
+
+    for (int bit = 0; bit < 8; bit++) {
+        if (nec_parse_logic1(cur)) {
+            addr_h |= (1 << bit);
+        } else if (!nec_parse_logic0(cur)) {
+            return false;
+        }
+        cur++;
+    }
+
+    //Decode 16-bit command
+    for (int bit = 0; bit < 8; bit++) {
+        if (nec_parse_logic1(cur)) {
+            cmd_l |= (1 << bit);
+        } else if (!nec_parse_logic0(cur)) {
+            return false;
+        }
+        cur++;
+    }
+
+    for (int bit = 0; bit < 8; bit++) {
+        if (nec_parse_logic1(cur)) {
+            cmd_h |= (1 << bit);
+        } else if (!nec_parse_logic0(cur)) {
+            return false;
+        }
+        cur++;
+    }
+
+    // Combine bytes (NEC standard)
+    uint16_t address = ((uint16_t)addr_h << 8) | addr_l;
+    uint16_t command = ((uint16_t)cmd_h << 8) | cmd_l;
+
+    // Standard NEC: command is inverted in extended frame
+    // or address/command checksum depending on variant
+
+    uint8_t cmd_low = cmd_l;
+    uint8_t cmd_high = cmd_h;
+
+    if ((uint8_t)(cmd_low ^ cmd_high) != 0xFF) {
+        // not strict NEC extended format, but many remotes ignore this
+    }
+
+    // Save result
+    out->address = address;
+    out->command = (cmd_h << 8) | cmd_l;
+
     return true;
 }
 
