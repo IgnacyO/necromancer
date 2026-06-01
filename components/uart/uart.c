@@ -15,7 +15,7 @@
 
 static const char *UART_TAG = "uart_module";
 
-void reset_ring_buffer(RingbufHandle_t buf_handle) {
+static void reset_ring_buffer(RingbufHandle_t buf_handle) {
     if (buf_handle == NULL) {
         return;
     }

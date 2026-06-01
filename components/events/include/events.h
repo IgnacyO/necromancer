@@ -7,7 +7,7 @@ typedef enum event_type_t {
 	EVENT_UART_INV_STATE,
 	EVENT_UART_RST_STATE,
 	EVENT_NEC_TX,
-	EVENT_NEC_RX
+	EVENT_NEC_RX_DATA
 } event_type_t;
 
 typedef struct event_t {
