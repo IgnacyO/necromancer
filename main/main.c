@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include "driver/rmt_types_legacy.h"
 #include "esp_err.h"
 #include "esp_check.h"
 #include "events.h"
@@ -16,8 +17,11 @@
 #include "freertos/queue.h"
 #include "hal/uart_types.h"
 #include "driver/gpio.h"
+#include "ir_nec_encoder.h"
 #include "portmacro.h"
+#include "soc/gpio_num.h"
 #include "uart.h"
+#include "ir_nec.h"
 
 #define IR_RX_GPIO GPIO_NUM_27
 #define IR_TX_GPIO GPIO_NUM_26
@@ -25,53 +29,7 @@
 #define TAG "Example"
 
 uart_m_t uart_m;
-
-/*void ir_nec_init(rmt_channel_handle_t *rmt_rx_chan) {
-	static const rmt_rx_channel_config_t rmt_rx_chan_config = {
-		.clk_src = RMT_CLK_SRC_DEFAULT,
-		.gpio_num = IR_RX_GPIO,
-		.resolution_hz = IR_NEC_RESOLUTION_HZ,
-		.mem_block_symbols = 64,
-		.flags.invert_in = 1
-	};
-	ESP_ERROR_CHECK(rmt_new_rx_channel(&rmt_rx_chan_config, rmt_rx_chan));
-}
-
-static bool rmt_rx_done_callback(rmt_channel_handle_t channel, const rmt_rx_done_event_data_t *event_data, void *user_data) {
-	// BaseType_t is the most efficient data type for the architecture
-	BaseType_t high_task_wakeup = pdFALSE;
-	QueueHandle_t rx_queue = (QueueHandle_t)user_data;
-	xQueueSendFromISR(rx_queue, event_data, &high_task_wakeup);
-	return high_task_wakeup == pdTRUE;
-}
-
-void parse_received_symbols_to_nec(rmt_symbol_word_t *rmt_symbols, size_t num_symbols) {
-	 printf("NEC frame start---\r\n");
-    for (size_t i = 0; i < num_symbols; i++) {
-        printf("{%d:%d},{%d:%d}\r\n", rmt_symbols[i].level0, rmt_symbols[i].duration0,
-               rmt_symbols[i].level1, rmt_symbols[i].duration1);
-    }
-    printf("---NEC frame end: ");
-	uint16_t nec_addr = 0;
-	uint16_t nec_cmd = 0;
-    // decode RMT symbols
-    switch (num_symbols) {
-    case 34: // NEC normal frame
-        if (nec_parse_frame(rmt_symbols, &nec_addr, &nec_cmd)) {
-            printf("Address=%04X, Command=%04X\r\n\r\n", nec_addr, nec_cmd);
-        }
-        break;
-    case 2: // NEC repeat frame
-        if (nec_parse_frame_repeat(rmt_symbols)) {
-            printf("Repeat\n");
-        }
-        break;
-    default:
-        printf("Unknown NEC frame\r\n\r\n");
-        break;
-    }
-}
-*/
+ir_nec_t ir_nec;
 
 static inline esp_err_t parse_event(event_t *event) {
 	
@@ -80,7 +38,14 @@ static inline esp_err_t parse_event(event_t *event) {
 		{
 			uart_frame_t uart_frame;
 			size_t res_len = uart_read(&uart_m, &uart_frame);
-			ESP_LOGI("DUPA", "%zu %d %d", res_len, uart_frame.hdr, uart_frame.data[0]);
+			//ESP_LOGI("", "%zu %d %d", res_len, uart_frame.hdr, uart_frame.data[0]);
+		}
+			break;
+		case EVENT_NEC_RX_DATA:
+		{
+			ir_nec_scan_code_t scan_code;
+			size_t res_len = ir_nec_read(&ir_nec, &scan_code);
+			//ESP_LOGI("DUPA Z NEC", "%zu %d %d", res_len, scan_code.address, scan_code.command);
 		}
 			break;
 		default:
@@ -111,6 +76,28 @@ void app_main(void)
 	ESP_ERROR_CHECK(uart_rx_run(&uart_m, uart_q_in));
 	ESP_ERROR_CHECK(uart_tx_run(&uart_m));
 	
+	
+	ir_nec_config_t ir_nec_config = {
+		.tx_carrier_config = {
+			.duty_cycle = 0.33, // 33 %
+			.frequency_hz = 38000 // 38kHz
+		},
+		.resolution_hz = IR_NEC_RESOLUTION_HZ,
+		.rmt_rx_queue_size = 64,
+		.rx_gpio = GPIO_NUM_16,
+		.tx_gpio = GPIO_NUM_17,
+		.rx_interm_buf_sz = sizeof(ir_nec_scan_code_t)*64,
+		.tx_interm_buf_sz = sizeof(ir_nec_scan_code_t)*64,
+		.invert_in = 1
+	};
+	ir_nec_init(&ir_nec, &ir_nec_config);
+	
+	task_arg_t *ir_nec_task_arg = malloc(sizeof(task_arg_t));
+	ir_nec_task_arg->dev_ptr = &ir_nec;
+	ir_nec_task_arg->event_queue = uart_q_in;
+
+	ir_nec_tx_run(ir_nec_task_arg);
+	
 	event_t event;
 	int c = 0;
 	
@@ -120,24 +107,16 @@ void app_main(void)
 			parse_event(&event);
 		}
 		if (c % 3 == 0) {
-			uart_frame_t frame;
+			/*uart_frame_t frame;
 			frame.hdr = 69;
 			ESP_LOGI("GGG", "UART TX EVENT");
-			uart_write(&uart_m, &frame);
+			uart_write(&uart_m, &frame);*/
+			ir_nec_scan_code_t scan;
+			scan.address = 07;
+			scan.command = 01;
+			ir_nec_write(&ir_nec, &scan);
 		}
 		vTaskDelay(pdMS_TO_TICKS(100));
 		c++;
-        /*if (xQueueReceive(receive_queue, &rx_data, pdMS_TO_TICKS(1000)) == pdPASS) {
-            // parse the receive symbols and print the result
-        	parse_received_symbols_to_nec(rx_data.received_symbols, rx_data.num_symbols);
-            // start receive again
-            ESP_ERROR_CHECK(rmt_receive(rx_channel, raw_symbols, sizeof(raw_symbols), &receive_config));
-        } else {
-			const ir_nec_scan_code_t scan_code = {
-				.address = 0x0440,
-				.command = 0x3003
-			};
-			ESP_ERROR_CHECK(rmt_transmit(tx_channel, nec_encoder, &scan_code, sizeof(scan_code), &transmit_config));
-		}*/
     }
 }

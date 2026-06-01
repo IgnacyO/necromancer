@@ -1,20 +1,22 @@
-#ifndef COMPONENTS_IR_NEC_INCLUDE_IR_NEC_H_
-#define COMPONENTS_IR_NEC_INCLUDE_IR_NEC_H_
+#ifndef COMPONENT_IR_NEC_H
+#define COMPONENT_IR_NEC_H
 
 #include "driver/rmt_common.h"
 #include "esp_err.h"
-#include "ir_nec_encoder.h"
-#include "ir_nec_parser.h"
 #include "driver/rmt_rx.h"
 #include "driver/rmt_types.h"
 #include "freertos/ringbuf.h"
 #include "soc/gpio_num.h"
+#include "common.h"
+#include "ir_nec_encoder.h"
+#include "ir_nec_parser.h"
 
 // the shortest duration for NEC signal is 560us, 1250ns < 560us, valid signal won't be treated as noise
-#define IR_NEC_SIG_RANGE_MIN_NS 1250 
+#define IR_NEC_SIG_RANGE_MIN_NS 1000 
 // the longest duration for NEC signal is 9000us, 12000000ns > 9000us, the receive won't stop early
-#define IR_NEC_SIG_RANGE_MAX_NS 1200000
+#define IR_NEC_SIG_RANGE_MAX_NS 25000000
 
+//@brief IR NEC device configuration struct for both rx and tx
 typedef struct {
 	size_t rmt_rx_queue_size;
 	uint16_t rx_interm_buf_sz;
@@ -23,7 +25,8 @@ typedef struct {
 	gpio_num_t tx_gpio;
 	size_t resolution_hz;
 	rmt_carrier_config_t tx_carrier_config;
-} ir_nec_m_config_t;
+	bool invert_in; ///< whether to invert input ir signal
+} ir_nec_config_t;
 
 typedef struct {
 	rmt_channel_handle_t rmt_rx_chan;
@@ -37,16 +40,18 @@ typedef struct {
 	RingbufHandle_t rx_interm_buf;
 	RingbufHandle_t tx_interm_buf;
 	QueueHandle_t rmt_rx_queue;
-} ir_nec_m_t;
+	task_arg_t tx_task_arg;
+	task_arg_t rx_task_arg;
+	bool data_lsb_format;
+} ir_nec_t;
 
-esp_err_t ir_nec_init(ir_nec_m_t *ir_nec_m, const ir_nec_m_config_t *config);
-esp_err_t ir_nec_tx_run(ir_nec_m_t *ir_nec_m);
-esp_err_t ir_nec_rx_run(ir_nec_m_t *ir_nec_m);
-esp_err_t ir_nec_tx_stop(ir_nec_m_t *ir_nec_m);
-esp_err_t ir_nec_rx_stop(ir_nec_m_t *ir_nec_m);
-esp_err_t ir_nec_tx_notify(ir_nec_m_t *ir_nec_m);
-size_t ir_nec_read(ir_nec_m_t *ir_nec_m, ir_nec_scan_code_t* buf);
-void ir_nec_write(ir_nec_m_t *ir_nec_m, ir_nec_scan_code_t* buf);
-esp_err_t ir_nec_deinit(ir_nec_m_t *ir_nec_m);
+esp_err_t ir_nec_init(ir_nec_t *ir_nec, const ir_nec_config_t *config);
+esp_err_t ir_nec_tx_run(task_arg_t *task_arg);
+esp_err_t ir_nec_rx_run(task_arg_t *task_arg);
+esp_err_t ir_nec_tx_stop(ir_nec_t *ir_nec);
+esp_err_t ir_nec_rx_stop(ir_nec_t *ir_nec);
+size_t ir_nec_read(ir_nec_t *ir_nec, ir_nec_scan_code_t* buf);
+void ir_nec_write(ir_nec_t *ir_nec, ir_nec_scan_code_t* buf);
+esp_err_t ir_nec_deinit(ir_nec_t *ir_nec);
 
-#endif /* COMPONENTS_IR_NEC_INCLUDE_IR_NEC_H_ */
+#endif /* COMPONENT_IR_NEC_H */
