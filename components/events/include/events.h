@@ -3,10 +3,7 @@
 #include <stdint.h>
 
 typedef enum event_type_t {
-	EVENT_UART_DATA,
-	EVENT_UART_INV_STATE,
-	EVENT_UART_RST_STATE,
-	EVENT_NEC_TX,
+	EVENT_UART_RX_DATA,
 	EVENT_NEC_RX_DATA
 } event_type_t;
 
