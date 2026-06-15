@@ -15,44 +15,79 @@
 
 static const char *UART_TAG = "uart_module";
 
-static void reset_ring_buffer(RingbufHandle_t buf_handle) {
-    if (buf_handle == NULL) {
-        return;
-    }
-
-    size_t item_size;
-    void *item;
-
-    while ((item = xRingbufferReceive(buf_handle, &item_size, 0)) != NULL) {
-    	vRingbufferReturnItem(buf_handle, item);
-    }
-}
-
 static void uart_rx_task(void *pvParameters) {
-	uart_m_rx_task_arg_t *arg = pvParameters;
-	uart_m_t *uart_m_ptr = arg->uart;
+    task_arg_t *arg = pvParameters;
+	uart_m_t *uart_m_ptr = arg->dev_ptr;
 	QueueHandle_t event_queue = arg->event_queue;
 	
     uart_event_t uart_event;
     event_t event;
     
-    char buffer[sizeof(uart_frame_t)];
 
     for (;;) {
         if (xQueueReceive(uart_m_ptr->uart_internal_queue, (void *)&uart_event, 10)) {
             switch (uart_event.type) {
             case UART_DATA:
-                uart_read_bytes(uart_m_ptr->uart_port,buffer, sizeof(uart_frame_t), 10);
-                event.event_type = EVENT_UART_DATA;
-                event.payload_len = sizeof(uart_frame_t);
-                if (xQueueSend(event_queue, (void *)&event, 10) == pdFAIL) {
-					ESP_LOGE(UART_TAG, "Rx: Failed to send an event to the dispatcher queue.");
-					continue;
-				}
-                if (xRingbufferSend(uart_m_ptr->rx_interm_buf, buffer, sizeof(uart_frame_t), 10) == pdFAIL) {
-					ESP_LOGE(UART_TAG, "Rx: Failed to save uart frame in the interm buffer.");
-				}
-                break;
+			{
+			    static uint8_t rx_accum[128];
+			    static size_t rx_len = 0;
+			
+			    uint8_t tmp[64];  // temporary read buffer
+			
+			    int len = uart_event.size;
+			    int read = uart_read_bytes(uart_m_ptr->uart_port, tmp, len, portMAX_DELAY);
+			
+			    // Protect against overflow
+			    if (rx_len + read > sizeof(rx_accum)) {
+			        ESP_LOGE(UART_TAG, "RX buffer overflow, resetting");
+			        rx_len = 0;
+			    }
+			
+			    // Append new data
+			    memcpy(rx_accum + rx_len, tmp, read);
+			    rx_len += read;
+			
+			    size_t offset = 0;
+			
+			    while (rx_len - offset >= sizeof(uart_frame_t)) {
+			
+			        uart_frame_t *frame = (uart_frame_t *)(rx_accum + offset);
+			
+			        // Sync check (magic byte)
+			        if (frame->magic != 0xAA) {
+			            ESP_LOGW("BS", "Desync (0x%02X), skipping byte", frame->magic);
+			            offset++;   // shift by one byte to resync
+			            continue;
+			        }
+			
+			        ESP_LOGI("BS", "Frame parsed cmd=%d", frame->hdr);
+			
+			        // Push event
+			        event.event_type = EVENT_UART_RX_DATA;
+			        event.payload_len = sizeof(uart_frame_t);
+			
+			        if (xQueueSend(event_queue, &event, 10) != pdPASS) {
+			            ESP_LOGE(UART_TAG, "Failed to push event");
+			        }
+			
+			        if (xRingbufferSend(uart_m_ptr->rx_interm_buf,
+			                            frame,
+			                            sizeof(uart_frame_t),
+			                            10) != pdPASS) {
+			            ESP_LOGE(UART_TAG, "Failed to push to ringbuffer");
+			        }
+			
+			        offset += sizeof(uart_frame_t);
+			    }
+			
+			    // Move leftover bytes to front
+			    if (offset > 0) {
+			        memmove(rx_accum, rx_accum + offset, rx_len - offset);
+			        rx_len -= offset;
+			    }
+			
+			    break;
+			}                
             //Event of HW FIFO overflow detected
             case UART_FIFO_OVF:
                 ESP_LOGW(UART_TAG, "hw fifo overflow");
@@ -92,8 +127,9 @@ static void uart_rx_task(void *pvParameters) {
     vTaskDelete(NULL);
 }
 
-static void uart_tx_task(void *pvParamters) {
-	uart_m_t *uart_m_ptr = pvParamters;
+static void uart_tx_task(void *pvParameters) {
+	task_arg_t *arg = pvParameters;
+	uart_m_t *uart_m_ptr = arg->dev_ptr;
 	size_t received_frame_len;
 	uart_frame_t *frame_to_be_sent;
 	for (;;) {
@@ -160,20 +196,18 @@ esp_err_t uart_init(uart_m_t *uart_m, uart_m_config_t *uart_m_config) {
 		return ESP_FAIL;
 }
 
-esp_err_t uart_tx_run(uart_m_t *uart_m) {
+esp_err_t uart_tx_run(task_arg_t *task_arg) {
+	uart_m_t *uart_m = task_arg->dev_ptr;
 	if (uart_m->tx_running || !uart_m->initialized) return ESP_ERR_INVALID_STATE;
-	xTaskCreate(uart_tx_task, "uart_tx_task", 3072, uart_m, 12, &uart_m->tx_task_handle);
+	xTaskCreate(uart_tx_task, "uart_tx_task", 3072, task_arg, 12, &uart_m->tx_task_handle);
 	uart_m->tx_running = true;
 	return ESP_OK;
 }
 
-esp_err_t uart_rx_run(uart_m_t *uart_m, QueueHandle_t event_queue) {
+esp_err_t uart_rx_run(task_arg_t *task_arg) {
+	uart_m_t *uart_m = task_arg->dev_ptr;
 	if (uart_m->rx_running || !uart_m->initialized) return ESP_ERR_INVALID_STATE;
-	uart_m_rx_task_arg_t task_arg = {
-		.uart = uart_m,
-		.event_queue = event_queue
-	};
-	xTaskCreate(uart_rx_task, "uart_rx_task", 3072, &task_arg, 12, &uart_m->rx_task_handle);
+	xTaskCreate(uart_rx_task, "uart_rx_task", 3072, task_arg, 12, &uart_m->rx_task_handle);
 	uart_m->rx_running = true;
 	return ESP_OK;
 }

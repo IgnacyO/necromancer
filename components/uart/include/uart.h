@@ -7,11 +7,13 @@
 #include "soc/uart_struct.h"
 #include <stdint.h>
 #include "events.h"
+#include "common.h"
 
 typedef struct uart_frame_t {
+	uint8_t magic;
 	uint8_t hdr;
 	uint8_t crc;
-	uint8_t data[14];
+	uint8_t data[13];
 } uart_frame_t;
 
 typedef struct uart_m_config_t {
@@ -47,8 +49,8 @@ typedef struct uart_m_rx_task_arg_t {
 } uart_m_rx_task_arg_t;
 
 esp_err_t uart_init(uart_m_t *uart_m, uart_m_config_t *uart_m_config);
-esp_err_t uart_tx_run(uart_m_t *uart_m);
-esp_err_t uart_rx_run(uart_m_t *uart_m, QueueHandle_t event_queue);
+esp_err_t uart_tx_run(task_arg_t *task_arg);
+esp_err_t uart_rx_run(task_arg_t *task_arg);
 esp_err_t uart_tx_stop(uart_m_t *uart_m);
 esp_err_t uart_rx_stop(uart_m_t *uart_m);
 esp_err_t uart_tx_notify(uart_m_t *uart_m);
