@@ -21,6 +21,8 @@
  */
 #define NEC_LEADING_CODE_DURATION_0  9000
 #define NEC_LEADING_CODE_DURATION_1  4500
+#define NECX_LEADING_CODE_DURATION_0  4500
+#define NECX_LEADING_CODE_DURATION_1  4500
 #define NEC_PAYLOAD_ZERO_DURATION_0  560
 #define NEC_PAYLOAD_ZERO_DURATION_1  560
 #define NEC_PAYLOAD_ONE_DURATION_0   560
@@ -39,12 +41,12 @@ bool nec_parse_logic1(rmt_symbol_word_t *rmt_nec_symbols);
 /**S
  * @brief Decode RMT symbols into NEC address and command
  */
-bool nec_parse_frame(rmt_symbol_word_t *rmt_nec_symbols, ir_nec_scan_code_t *nec_frame);
+bool nec_parse_frame(rmt_symbol_word_t *rmt_nec_symbols, bool err_cor, bool lsb_format, nec_scan_code_t *ret);
 /**
  * @brief Check whether the RMT symbols represent NEC repeat code
  */
 bool nec_parse_frame_repeat(rmt_symbol_word_t *rmt_nec_symbols);
 
-bool parse_received_symbols_to_nec(rmt_symbol_word_t *rmt_symbols, size_t num_symbols, ir_nec_scan_code_t *res);
+bool parse_received_symbols_to_nec(rmt_symbol_word_t *rmt_nec_symbols, size_t num_symbols, bool err_cor, nec_scan_code_t *ret);
 
 #endif /* COMPONENTS_IR_NEC_INCLUDE_IR_NEC_PARSER_H_ */

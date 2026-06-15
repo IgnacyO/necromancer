@@ -12,7 +12,7 @@
 #include "ir_nec_parser.h"
 #include "events.h"
 
-#define RX_SYMBOL_NUM 64
+#define RX_SYMBOL_NUM 128
 #define RMT_BLOCK_SYMBOLS_NUM 128
 
 static const char* IR_NEC_TAG = "ir_nec";
@@ -30,11 +30,13 @@ static void ir_nec_tx_task(void *pvParameters) {
 	task_arg_t *arg = pvParameters; 
 	ir_nec_t *ir_nec = arg->dev_ptr;
 	size_t received_frame_len;
-	ir_nec_scan_code_t *frame_to_be_sent;
+	nec_scan_code_t *frame_to_be_sent;
 	for (;;) {
-		if ((frame_to_be_sent = (ir_nec_scan_code_t*)xRingbufferReceive(ir_nec->tx_interm_buf, &received_frame_len, 10)) != NULL) {
+		if ((frame_to_be_sent = (nec_scan_code_t*)xRingbufferReceive(ir_nec->tx_interm_buf, &received_frame_len, 10)) != NULL) {
 			ESP_LOGI(IR_NEC_TAG, "GOT SOMETHING TX %d %d\n", frame_to_be_sent->address, frame_to_be_sent->command);
-			rmt_transmit(ir_nec->rmt_tx_chan, ir_nec->nec_encoder, frame_to_be_sent, sizeof(ir_nec_scan_code_t), &transmit_config);
+			if (rmt_transmit(ir_nec->rmt_tx_chan, ir_nec->nec_encoder, frame_to_be_sent, sizeof(nec_scan_code_t), &transmit_config) != ESP_OK){
+				ESP_LOGE(IR_NEC_TAG, "Error while transmitting");	
+			}
 			vRingbufferReturnItem(ir_nec->tx_interm_buf, frame_to_be_sent);
 		}
 		else {
@@ -51,6 +53,8 @@ static void ir_nec_rx_task(void *pvParameters) {
     rmt_rx_done_event_data_t evt_data;
 
     static rmt_symbol_word_t rx_symbols[RX_SYMBOL_NUM];
+    			ESP_LOGI(IR_NEC_TAG, "IR RX TASK RUNNING");
+
 
     ESP_ERROR_CHECK(
         rmt_receive(
@@ -66,13 +70,21 @@ static void ir_nec_rx_task(void *pvParameters) {
         if (xQueueReceive(
                 ir_nec->rmt_rx_queue,
                 &evt_data,
-                portMAX_DELAY
+                10
             ) == pdTRUE) {
-
-            ir_nec_scan_code_t scan_code = {0, 0};
+			ESP_LOGI(IR_NEC_TAG, "GOT SOMETHING FROM IR RX");
+            nec_scan_code_t scan_code = {0, 0};
 			
-            if (parse_received_symbols_to_nec(evt_data.received_symbols, evt_data.num_symbols, &scan_code)) {
-               ESP_LOGI(IR_NEC_TAG, "NEC: %d %d", scan_code.address, scan_code.command);
+            if (parse_received_symbols_to_nec(evt_data.received_symbols, evt_data.num_symbols, ir_nec->error_correction,&scan_code)) {
+               
+				xRingbufferSend(ir_nec->rx_interm_buf,
+				                    &scan_code,
+				                    sizeof(scan_code),
+				                    10);
+
+            }
+            else {
+            	ESP_LOGE(IR_NEC_TAG, "Error parsing NEC");
             }
 
             ESP_ERROR_CHECK(
@@ -95,6 +107,7 @@ static bool rmt_rx_done_callback(rmt_channel_handle_t channel, const rmt_rx_done
 	BaseType_t high_task_wakeup = pdFALSE;
 	QueueHandle_t rx_queue = *(QueueHandle_t*)user_data;
 	xQueueSendFromISR(rx_queue, event_data, &high_task_wakeup);
+	ESP_EARLY_LOGI("RMT", "RX DONE");
 	return high_task_wakeup == pdTRUE;
 }
 
@@ -102,6 +115,7 @@ esp_err_t ir_nec_init(ir_nec_t *ir_nec, const ir_nec_config_t *config) {
     ir_nec->initialized = true;
     ir_nec->rx_running = false;
     ir_nec->tx_running = false;
+    ir_nec->error_correction = config->error_correction;
     ir_nec->rx_interm_buf = xRingbufferCreate(config->rx_interm_buf_sz, RINGBUF_TYPE_NOSPLIT);
     ir_nec->tx_interm_buf = xRingbufferCreate(config->tx_interm_buf_sz, RINGBUF_TYPE_NOSPLIT);
     ir_nec->rmt_rx_queue = xQueueCreate(config->rmt_rx_queue_size, sizeof(rmt_rx_done_event_data_t));
@@ -157,7 +171,7 @@ esp_err_t ir_nec_rx_run(task_arg_t *task_arg) {
 	return ESP_OK;
 }
 
-esp_err_t ir_nec_stop_tx(ir_nec_t *ir_nec) {
+esp_err_t ir_nec_tx_stop(ir_nec_t *ir_nec) {
 	if (ir_nec->tx_running && ir_nec->initialized) {
 		vTaskSuspend(ir_nec->tx_task_handle);
 		ir_nec->tx_running = false;
@@ -167,7 +181,7 @@ esp_err_t ir_nec_stop_tx(ir_nec_t *ir_nec) {
 	return ESP_ERR_INVALID_STATE;
 }
 
-esp_err_t ir_nec_stop_rx(ir_nec_t *ir_nec) {
+esp_err_t ir_nec_rx_stop(ir_nec_t *ir_nec) {
 	if (ir_nec->rx_running && ir_nec->initialized) {
 		vTaskSuspend(ir_nec->rx_task_handle);
 		ir_nec->rx_running = false;
@@ -178,7 +192,7 @@ esp_err_t ir_nec_stop_rx(ir_nec_t *ir_nec) {
 	return ESP_ERR_INVALID_STATE;
 }
 
-size_t ir_nec_read(ir_nec_t *ir_nec, ir_nec_scan_code_t* buf) {
+size_t ir_nec_read(ir_nec_t *ir_nec, nec_scan_code_t* buf) {
 	size_t res_size;
 	void *res = xRingbufferReceive(ir_nec->rx_interm_buf, &res_size, 10);
 	if (res == NULL) {
@@ -190,8 +204,8 @@ size_t ir_nec_read(ir_nec_t *ir_nec, ir_nec_scan_code_t* buf) {
 	return res_size;
 }
 
-void ir_nec_write(ir_nec_t *ir_nec, ir_nec_scan_code_t* buf) {
-	if (xRingbufferSend(ir_nec->tx_interm_buf, buf, sizeof(ir_nec_scan_code_t), 10) == pdFALSE) {
+void ir_nec_write(ir_nec_t *ir_nec, nec_scan_code_t* buf) {
+	if (xRingbufferSend(ir_nec->tx_interm_buf, buf, sizeof(nec_scan_code_t), 10) == pdFALSE) {
 		ESP_LOGE(IR_NEC_TAG, "TX: Failed to send data to intermediate buffer");
 		return;
 	}

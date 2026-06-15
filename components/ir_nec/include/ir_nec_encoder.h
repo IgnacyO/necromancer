@@ -10,12 +10,12 @@
 #include "driver/rmt_encoder.h"
 
 /**
- * @brief IR NEC scan code representation
+ * @brief NEC scan code representation
  */
 typedef struct {
     uint16_t address;
     uint16_t command;
-} ir_nec_scan_code_t;
+} nec_scan_code_t;
 
 /**
  * @brief Type of IR NEC encoder configuration

@@ -26,6 +26,7 @@ typedef struct {
 	size_t resolution_hz;
 	rmt_carrier_config_t tx_carrier_config;
 	bool invert_in; ///< whether to invert input ir signal
+	bool error_correction;
 } ir_nec_config_t;
 
 typedef struct {
@@ -43,6 +44,7 @@ typedef struct {
 	task_arg_t tx_task_arg;
 	task_arg_t rx_task_arg;
 	bool data_lsb_format;
+	bool error_correction;
 } ir_nec_t;
 
 esp_err_t ir_nec_init(ir_nec_t *ir_nec, const ir_nec_config_t *config);
@@ -50,8 +52,8 @@ esp_err_t ir_nec_tx_run(task_arg_t *task_arg);
 esp_err_t ir_nec_rx_run(task_arg_t *task_arg);
 esp_err_t ir_nec_tx_stop(ir_nec_t *ir_nec);
 esp_err_t ir_nec_rx_stop(ir_nec_t *ir_nec);
-size_t ir_nec_read(ir_nec_t *ir_nec, ir_nec_scan_code_t* buf);
-void ir_nec_write(ir_nec_t *ir_nec, ir_nec_scan_code_t* buf);
+size_t ir_nec_read(ir_nec_t *ir_nec, nec_scan_code_t* buf);
+void ir_nec_write(ir_nec_t *ir_nec, nec_scan_code_t* buf);
 esp_err_t ir_nec_deinit(ir_nec_t *ir_nec);
 
 #endif /* COMPONENT_IR_NEC_H */

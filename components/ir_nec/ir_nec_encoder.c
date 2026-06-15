@@ -27,7 +27,7 @@ static size_t rmt_encode_ir_nec(rmt_encoder_t *encoder, rmt_channel_handle_t cha
     rmt_encode_state_t session_state = RMT_ENCODING_RESET;
     rmt_encode_state_t state = RMT_ENCODING_RESET;
     size_t encoded_symbols = 0;
-    ir_nec_scan_code_t *scan_code = (ir_nec_scan_code_t *)primary_data;
+    nec_scan_code_t *scan_code = (nec_scan_code_t *)primary_data;
     rmt_encoder_handle_t copy_encoder = nec_encoder->copy_encoder;
     rmt_encoder_handle_t bytes_encoder = nec_encoder->bytes_encoder;
     switch (nec_encoder->state) {

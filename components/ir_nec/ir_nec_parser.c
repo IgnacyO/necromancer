@@ -26,54 +26,40 @@ bool nec_parse_logic1(rmt_symbol_word_t *rmt_nec_symbols)
            nec_check_in_range(rmt_nec_symbols->duration1, NEC_PAYLOAD_ONE_DURATION_1);
 }
 
-/*bool nec_parse_frame(rmt_symbol_word_t *rmt_nec_symbols, ir_nec_scan_code_t *nec_frame)
+/*static inline void nec_set_bit(uint8_t *byte, int bit_index, bool lsb)
 {
-    rmt_symbol_word_t *cur = rmt_nec_symbols;
-    uint16_t address = 0;
-    uint16_t command = 0;
-    bool valid_leading_code = nec_check_in_range(cur->duration0, NEC_LEADING_CODE_DURATION_0) &&
-                              nec_check_in_range(cur->duration1, NEC_LEADING_CODE_DURATION_1);
-    if (!valid_leading_code) {
-        return false;
+    if (lsb) {
+		*byte |= (1 << bit_index);
+    } else {
+        *byte |= (1 << (7 - bit_index));
     }
-    cur++;
-    for (int i = 0; i < 16; i++) {
-        if (nec_parse_logic1(cur)) {
-            address |= 1 << i;
-        } else if (nec_parse_logic0(cur)) {
-            address &= ~(1 << i);
-        } else {
-            return false;
-        }
-        cur++;
-    }
-    for (int i = 0; i < 16; i++) {
-        if (nec_parse_logic1(cur)) {
-            command |= 1 << i;
-        } else if (nec_parse_logic0(cur)) {
-            command &= ~(1 << i);
-        } else {
-            return false;
-        }
-        cur++;
-    }
-    // save address and command
-    nec_frame->address = address;
-    nec_frame->command = command;
-    return true;
 }*/
 
-bool nec_parse_frame(rmt_symbol_word_t *s, ir_nec_scan_code_t *out)
+static uint8_t reverse_byte(uint8_t x)
 {
-    if (!s || !out) return false;
+    x = (x & 0xF0) >> 4 | (x & 0x0F) << 4;
+    x = (x & 0xCC) >> 2 | (x & 0x33) << 2;
+    x = (x & 0xAA) >> 1 | (x & 0x55) << 1;
+    return x;
+}
 
-    rmt_symbol_word_t *cur = s;
+bool nec_parse_frame(rmt_symbol_word_t *rmt_nec_symbols, bool err_cor, bool lsb_format, nec_scan_code_t *ret)
+{
+    if (!rmt_nec_symbols || !ret) return false;
+
+    rmt_symbol_word_t *cur = rmt_nec_symbols;
 
     // Check leader
-    if (!nec_check_in_range(cur->duration0, NEC_LEADING_CODE_DURATION_0) ||
-        !nec_check_in_range(cur->duration1, NEC_LEADING_CODE_DURATION_1)) {
-        return false;
-    }
+    bool leader_ok =
+    (nec_check_in_range(cur->duration0, NEC_LEADING_CODE_DURATION_0) &&
+     nec_check_in_range(cur->duration1, NEC_LEADING_CODE_DURATION_1)) ||
+
+    (nec_check_in_range(cur->duration0, NECX_LEADING_CODE_DURATION_0) &&
+     nec_check_in_range(cur->duration1, NECX_LEADING_CODE_DURATION_1));
+
+	if (!leader_ok) {
+	    return false;
+	}
 
     cur++;
 
@@ -120,23 +106,35 @@ bool nec_parse_frame(rmt_symbol_word_t *s, ir_nec_scan_code_t *out)
         cur++;
     }
 
-    // Combine bytes (NEC standard)
-    uint16_t address = ((uint16_t)addr_h << 8) | addr_l;
-    uint16_t command = ((uint16_t)cmd_h << 8) | cmd_l;
-
     // Standard NEC: command is inverted in extended frame
     // or address/command checksum depending on variant
 
-    uint8_t cmd_low = cmd_l;
-    uint8_t cmd_high = cmd_h;
+    
+    if (err_cor) {
+		// Validate command
+		if ((uint8_t)(cmd_l ^ cmd_h) != 0xFF) {
+		    return false;
+		}
+		
+		// Validate address (classic NEC, not extended)
+		if ((uint8_t)(addr_l ^ addr_h) != 0xFF) {
+		    return false;
+		}
+	}
+	
+	
+    
+	if (!lsb_format) {
+	    addr_l = reverse_byte(addr_l);
+	    addr_h = reverse_byte(addr_h);
+	    cmd_l  = reverse_byte(cmd_l);
+	    cmd_h  = reverse_byte(cmd_h);
+	}
 
-    if ((uint8_t)(cmd_low ^ cmd_high) != 0xFF) {
-        // not strict NEC extended format, but many remotes ignore this
-    }
 
     // Save result
-    out->address = address;
-    out->command = (cmd_h << 8) | cmd_l;
+    ret->address = ((uint16_t)addr_h << 8) | addr_l;
+	ret->command = ((uint16_t)cmd_h << 8) | cmd_l;
 
     return true;
 }
@@ -147,22 +145,22 @@ bool nec_parse_frame_repeat(rmt_symbol_word_t *rmt_nec_symbols)
            nec_check_in_range(rmt_nec_symbols->duration1, NEC_REPEAT_CODE_DURATION_1);
 }
 
-bool parse_received_symbols_to_nec(rmt_symbol_word_t *rmt_symbols, size_t num_symbols, ir_nec_scan_code_t *res) {
+bool parse_received_symbols_to_nec(rmt_symbol_word_t *rmt_nec_symbols, size_t num_symbols, bool err_cor, nec_scan_code_t *ret) {
 	 printf("NEC frame start---\r\n");
     for (size_t i = 0; i < num_symbols; i++) {
-        printf("{%d:%d},{%d:%d}\r\n", rmt_symbols[i].level0, rmt_symbols[i].duration0,
-               rmt_symbols[i].level1, rmt_symbols[i].duration1);
+        printf("{%d:%d},{%d:%d}\r\n", rmt_nec_symbols[i].level0, rmt_nec_symbols[i].duration0,
+               rmt_nec_symbols[i].level1, rmt_nec_symbols[i].duration1);
     }
     printf("---NEC frame end: ");
     // decode RMT symbols
     switch (num_symbols) {
     case 34: // NEC normal frame
-        if (nec_parse_frame(rmt_symbols, res)) {
+        if (nec_parse_frame(rmt_nec_symbols, err_cor, 1, ret)) {
 			return true;
         }
         break;
     case 2: // NEC repeat frame
-        if (nec_parse_frame_repeat(rmt_symbols)) {
+        if (nec_parse_frame_repeat(rmt_nec_symbols)) {
             printf("Repeat\n");
         }
         break;
