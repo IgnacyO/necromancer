@@ -16,6 +16,9 @@
 // the longest duration for NEC signal is 9000us, 12000000ns > 9000us, the receive won't stop early
 #define IR_NEC_SIG_RANGE_MAX_NS 25000000
 
+#define NEC_REPEAT_DELAY_MS 110   // typical repeat interval
+#define NEC_FIRST_REPEAT_DELAY_MS 80  // shorter delay after first frame
+
 //@brief IR NEC device configuration struct for both rx and tx
 typedef struct {
 	size_t rmt_rx_queue_size;

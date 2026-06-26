@@ -27,28 +27,93 @@ static const rmt_transmit_config_t transmit_config = {
     .loop_count = 0,
 };
 
+static nec_scan_code_t last_frame = {0};
+static bool last_frame_valid = false;
+
+
+static esp_err_t ir_nec_send_repeat(ir_nec_t *ir, bool necx)
+{
+    if (!ir) return ESP_ERR_INVALID_ARG;
+
+    rmt_symbol_word_t repeat[2];
+
+    // Leader + repeat space
+    repeat[0].level0 = 1;
+    repeat[0].duration0 = NEC_LEADING_CODE_DURATION_0;
+    repeat[0].level1 = 0;
+    repeat[0].duration1 = NEC_REPEAT_CODE_DURATION_1;
+
+    // End pulse (~560us ON)
+    repeat[1].level0 = 1;
+    repeat[1].duration0 = NEC_PAYLOAD_ZERO_DURATION_0;
+    repeat[1].level1 = 0;
+    repeat[1].duration1 = 0;
+
+    return rmt_transmit(ir->rmt_tx_chan, NULL, repeat, sizeof(repeat), NULL);
+}
+
 static void ir_nec_tx_task(void *pvParameters) {
+static nec_scan_code_t last_frame = {0};
+static bool has_last_frame = false;
+static TickType_t last_send_time = 0;
+static bool repeat_mode = false;	
+	
   task_arg_t *arg = pvParameters;
   ir_nec_t *ir_nec = arg->dev_ptr;
-  size_t received_frame_len;
-  nec_scan_code_t *frame_to_be_sent;
+  
   for (;;) {
-    if ((frame_to_be_sent = (nec_scan_code_t *)xRingbufferReceive(
-             ir_nec->tx_interm_buf, &received_frame_len, 10)) != NULL) {
-      if (g_debug_enabled) {
-        ESP_LOGD(IR_NEC_TAG, "Sending nec frame: A: %x C: %x",
-                 frame_to_be_sent->address, frame_to_be_sent->command);
-      }
-      if (rmt_transmit(ir_nec->rmt_tx_chan, ir_nec->nec_encoder,
-                       frame_to_be_sent, sizeof(nec_scan_code_t),
-                       &transmit_config) != ESP_OK) {
-        ESP_LOGE(IR_NEC_TAG, "Error occured while transmitting.");
-      }
-      vRingbufferReturnItem(ir_nec->tx_interm_buf, frame_to_be_sent);
-    } else {
-      vTaskDelay(pdMS_TO_TICKS(10));
+	  size_t received_frame_len;
+
+    nec_scan_code_t *frame =
+        (nec_scan_code_t*)xRingbufferReceive(ir_nec->tx_interm_buf,
+                                             &received_frame_len,
+                                             10);
+
+    TickType_t now = xTaskGetTickCount();
+
+    if (frame != NULL) {
+
+        bool same_as_last = has_last_frame &&
+                            (frame->address == last_frame.address) &&
+                            (frame->command == last_frame.command);
+
+        if (same_as_last) {
+            repeat_mode = true;
+        } else {
+            repeat_mode = false;
+        }
+
+        if (!repeat_mode) {
+            rmt_transmit(ir_nec->rmt_tx_chan,
+                         ir_nec->nec_encoder,
+                         frame,
+                         sizeof(nec_scan_code_t),
+                         &transmit_config);
+
+            last_frame = *frame;
+            has_last_frame = true;
+            last_send_time = now;
+        }
+
+        vRingbufferReturnItem(ir_nec->tx_interm_buf, frame);
     }
-  }
+    else {
+        if (has_last_frame) {
+
+            int elapsed = (now - last_send_time) * portTICK_PERIOD_MS;
+
+            if (elapsed >= NEC_REPEAT_DELAY_MS) {
+
+              ir_nec_send_repeat(ir_nec, 0);
+
+              last_send_time = now;
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
   vTaskDelete(NULL);
 }
 
@@ -63,18 +128,39 @@ static void ir_nec_rx_task(void *pvParameters) {
   ESP_ERROR_CHECK(rmt_receive(ir_nec->rmt_rx_chan, rx_symbols,
                               sizeof(rx_symbols), &receive_config));
 
-  for (;;) {
+  bool is_repeat = false;
 
+  for (;;) {
     if (xQueueReceive(ir_nec->rmt_rx_queue, &evt_data, 10) == pdTRUE) {
       nec_scan_code_t scan_code = {0, 0};
+      if (parse_received_symbols_to_nec(
+              evt_data.received_symbols, evt_data.num_symbols,
+              ir_nec->error_correction, &scan_code, &is_repeat)) {
 
-      if (parse_received_symbols_to_nec(evt_data.received_symbols,
-                                        evt_data.num_symbols,
-                                        ir_nec->error_correction, &scan_code)) {
-
-        if (g_debug_enabled)
-          ESP_LOGD(IR_NEC_TAG, "Received nec frame: A: %x C: %x",
+        //if (g_debug_enabled)
+          ESP_LOGI(IR_NEC_TAG, "Received nec frame: A: %x C: %x",
                    scan_code.address, scan_code.command);
+
+        if (is_repeat) {
+          if (last_frame_valid) {
+            // reuse last frame
+            scan_code = last_frame;
+          } else {
+            // ignore repeat (no previous frame)
+            continue;
+          }
+        } else {
+          // store new frame
+          last_frame = scan_code;
+          last_frame_valid = true;
+        }
+		/*event.event_type = EVENT_UART_RX_DATA;
+        event.payload_len = sizeof(uart_frame_t);
+
+          if (xQueueSend(event_queue, &event, 10) != pdPASS) {
+            ESP_LOGE(UART_TAG, "Rx: Failed to push event");
+            continue;
+          }*/
         xRingbufferSend(ir_nec->rx_interm_buf, &scan_code, sizeof(scan_code),
                         10);
 

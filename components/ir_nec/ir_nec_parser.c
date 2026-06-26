@@ -6,6 +6,7 @@
 #include "ir_nec_parser.h"
 #include "common.h"
 
+
 /**
  * @brief Check whether a duration is within expected range
  */
@@ -139,23 +140,31 @@ bool nec_parse_frame(rmt_symbol_word_t *rmt_nec_symbols, bool err_cor,
 }
 
 bool nec_parse_frame_repeat(rmt_symbol_word_t *rmt_nec_symbols) {
-  return nec_check_in_range(rmt_nec_symbols->duration0,
-                            NEC_REPEAT_CODE_DURATION_0) &&
-         nec_check_in_range(rmt_nec_symbols->duration1,
-                            NEC_REPEAT_CODE_DURATION_1);
+
+  if (!rmt_nec_symbols)
+    return false;
+
+  return (nec_check_in_range(rmt_nec_symbols->duration0,
+                             NEC_REPEAT_CODE_DURATION_0) &&
+          nec_check_in_range(rmt_nec_symbols->duration1,
+                             NEC_REPEAT_CODE_DURATION_1)) ||
+         (nec_check_in_range(rmt_nec_symbols->duration0,
+                             NECX_REPEAT_CODE_DURATION_0) &&
+          nec_check_in_range(rmt_nec_symbols->duration1,
+                             NECX_REPEAT_CODE_DURATION_1));
 }
 
 bool parse_received_symbols_to_nec(rmt_symbol_word_t *rmt_nec_symbols,
                                    size_t num_symbols, bool err_cor,
-                                   nec_scan_code_t *ret) {
+                                   nec_scan_code_t *ret, bool *is_repeat) {
   if (g_debug_enabled) {
-    printf("NEC frame start---\r\n");
+    /*printf("NEC frame start---\r\n");
     for (size_t i = 0; i < num_symbols; i++) {
       printf("{%d:%d},{%d:%d}\r\n", rmt_nec_symbols[i].level0,
              rmt_nec_symbols[i].duration0, rmt_nec_symbols[i].level1,
              rmt_nec_symbols[i].duration1);
     }
-    printf("---NEC frame end ---\r\n");
+    printf("---NEC frame end ---\r\n");*/
   }
   // decode RMT symbols
   switch (num_symbols) {
@@ -165,11 +174,18 @@ bool parse_received_symbols_to_nec(rmt_symbol_word_t *rmt_nec_symbols,
     }
     break;
   case 2: // NEC repeat frame
+  {
     if (nec_parse_frame_repeat(rmt_nec_symbols)) {
       if (g_debug_enabled)
         printf("Repeat\n");
     }
+
+    *is_repeat = true;
+    return true;
+
     break;
+  }
+
   default:
     if (g_debug_enabled)
       printf("Unknown NEC frame\r\n\r\n");
