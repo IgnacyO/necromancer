@@ -23,4 +23,7 @@ typedef enum : uint8_t {
 
 ///@brief Empties idf ring buffer
 void reset_ring_buffer(RingbufHandle_t buf_handle);
+
+
+extern bool g_debug_enabled;
 #endif 

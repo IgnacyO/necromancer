@@ -10,3 +10,6 @@ void reset_ring_buffer(RingbufHandle_t buf_handle) {
     	vRingbufferReturnItem(buf_handle, item);
     }
 }
+
+
+bool g_debug_enabled = true;
